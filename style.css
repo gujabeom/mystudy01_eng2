@@ -264,3 +264,9 @@ details.word[open] .w-sum { display: none; }
 .fc-word-sm { font-size: 24px; }
 .fc-btns { background: var(--bg); padding: 8px 0; }
 .fc-btns .btn.ghost { background: var(--card); }
+.pill.new { background: var(--bad-soft); color: var(--bad); }
+/* 발음 · 강세 */
+.say { border: 0; background: none; cursor: pointer; font-size: 16px; padding: 2px 4px; vertical-align: middle; }
+.stress { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.stress li { line-height: 1.6; }
+.st-ex { display: block; font-size: 14px; color: var(--muted); padding-left: 4px; }

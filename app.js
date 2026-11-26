@@ -84,6 +84,24 @@
     };
   })();
 
+  // ---------- 본 단어 (NEW 표시용: 한 번이라도 펼치거나 카드로 본 단어) ----------
+  const SEEN_STORE = "eng2.seen.v1";
+  const seen = (() => {
+    let d = {};
+    try { d = JSON.parse(store.get(SEEN_STORE) || "{}") || {}; } catch { d = {}; }
+    return {
+      has: (id) => !!d[id] || !!srs.get(id),
+      mark(id) { if (!d[id]) { d[id] = 1; store.set(SEEN_STORE, JSON.stringify(d)); } },
+    };
+  })();
+  document.addEventListener("toggle", (e) => {
+    const det = e.target;
+    if (det.matches?.("details.word") && det.open) {
+      seen.mark(det.dataset.id);
+      det.querySelector(".pill.new")?.remove();
+    }
+  }, true);
+
   // ---------- 잠금 (암호화된 내용) ----------
   const KEY_STORE = "eng2.key.v1";
   const b64 = (t) => Uint8Array.from(atob(t), (c) => c.charCodeAt(0));
@@ -162,6 +180,36 @@
   }
   const askHref = (ref) => `#/ask?${new URLSearchParams(ref ? { ref } : {})}`;
 
+  // ---------- 발음 듣기: 브라우저 내장 음성 합성 (인터넷 · 설치 불필요) ----------
+  const canSpeak = "speechSynthesis" in window;
+  let enVoice = null;
+  function pickVoice() {
+    const vs = canSpeak ? speechSynthesis.getVoices() : [];
+    enVoice = vs.find((v) => v.lang === "en-US") || vs.find((v) => v.lang?.startsWith("en")) || null;
+  }
+  if (canSpeak) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+  function speak(text) {
+    if (!canSpeak) return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(String(text).replace(/\*\*/g, ""));
+    u.lang = "en-US"; u.rate = 0.9;
+    if (enVoice) u.voice = enVoice;
+    speechSynthesis.speak(u);
+  }
+  const sayBtn = (text, label = "발음 듣기") => (canSpeak
+    ? `<button type="button" class="say" data-say="${esc(String(text).replace(/\*\*/g, ""))}" aria-label="${label}">🔊</button>` : "");
+  // 강세: { note, forms:[{ pos, mark, ko, ex }] } — 품사 · 뜻에 따라 강세가 바뀌는 단어
+  function stressBox(st) {
+    if (!st) return "";
+    return `<div class="nsec"><div class="nlabel">🗣️ 강세 · 발음</div>
+      <ul class="stress">${st.forms.map((f) => `<li>
+        <span class="pill gray">${esc(f.pos)}</span> <b class="en">${esc(f.mark)}</b> <span class="small">${fmt(f.ko || "")}</span>
+        ${f.ex ? `<span class="st-ex en">${fmt(f.ex)} ${sayBtn(f.ex, "예문 듣기")}</span>` : ""}
+      </li>`).join("")}</ul>
+      ${st.note ? `<div class="small muted" style="margin-top:6px">${fmt(st.note)}</div>` : ""}
+    </div>`;
+  }
+
   // ---------- 단어 한 장 ----------
   const levelPill = (lv) => `<span class="pill ${lv === "심화" ? "fl" : lv === "수능" ? "" : "gray"}">${esc(lv)}</span>`;
   function entry(w, setId) {
@@ -169,11 +217,12 @@
     const q = encodeURIComponent(w.word);
     return `
       <div class="w-core">💡 ${fmt(w.core)}</div>
+      ${stressBox(w.stress)}
       ${w.hook ? `<div class="w-hook">${fmt(w.hook)}</div>` : ""}
       ${sec("📖 뜻과 쓰임", `<ol class="senses">${w.senses.map((s) => `<li>
           <div class="def en">${fmt(s.def)}</div>
           <div class="ko">→ <b>${fmt(s.ko)}</b></div>
-          <div class="sx en">${fmt(s.ex)}</div>
+          <div class="sx en">${fmt(s.ex)} ${sayBtn(s.ex, "예문 듣기")}</div>
           ${s.exKo ? `<div class="sxko">${fmt(s.exKo)}</div>` : ""}
         </li>`).join("")}</ol>`)}
       ${sec("🔗 자주 같이 쓰는 말", w.chunks?.length ? `<div class="chunks en">${w.chunks.map((c) => `<span>${fmt(c.en)}${c.ko ? ` <small>${fmt(c.ko)}</small>` : ""}</span>`).join("")}</div>` : "")}
@@ -193,16 +242,17 @@
   }
   function wordRow(w, setId) {
     const s = srs.get(w.id);
-    const mark = !s ? "" : s.box >= 3 ? `<span class="pill">외움</span>` : `<span class="pill student">복습 중</span>`;
+    const mark = !s ? (seen.has(w.id) ? "" : `<span class="pill new">NEW</span>`) : s.box >= 3 ? `<span class="pill">외움</span>` : `<span class="pill student">복습 중</span>`;
     return `<details class="card word" data-id="${esc(w.id)}">
-      <summary><span class="w-word en">${esc(w.word)}</span> <span class="muted small">${esc(w.pos || "")}</span> ${levelPill(w.level)} ${mark}
+      <summary><span class="w-word en">${esc(w.word)}</span> ${sayBtn(w.word)} <span class="muted small">${esc(w.pos || "")}</span> ${levelPill(w.level)} ${mark}
         <div class="w-sum">${fmt(w.core)}</div></summary>
       <div class="w-body">${entry(w, setId)}</div>
     </details>`;
   }
 
   // ---------- 화면 ----------
-  function renderHome(idx) {
+  async function renderHome(idx) {
+    const fresh = (await allWords()).filter((w) => !seen.has(w.id)).length;
     const groups = [];
     for (const s of idx.sets) {
       let g = groups.find((x) => x.name === s.group);
@@ -218,6 +268,7 @@
       </section>
       <div class="home-actions">
         <a class="btn" href="#/cards/due">오늘 복습 ${due}개</a>
+        ${fresh ? `<a class="btn ghost" href="#/cards/new">새 단어 ${fresh}개</a>` : ""}
         <form id="sForm" class="search"><input id="sInput" type="search" placeholder="단어 · 뜻 검색" autocomplete="off"></form>
       </div>
       ${groups.map((g) => `<div class="group-title">${esc(g.name)}</div>
@@ -271,7 +322,9 @@
   // 암기 카드: 앞면(단어) → 탭 → 뒷면(핵심 + 뜻) → 몰라요 / 헷갈려요 / 알아요
   async function renderCards(id) {
     let deck;
-    if (id === "due") {
+    if (id === "new") {
+      deck = (await allWords()).filter((w) => !seen.has(w.id));
+    } else if (id === "due") {
       const due = new Set(srs.dueIds());
       deck = (await allWords()).filter((w) => due.has(w.id));
     } else {
@@ -289,10 +342,11 @@
         return;
       }
       const w = deck[i];
-      view.innerHTML = `<a class="crumb" href="${id === "due" ? "#/" : `#/s/${esc(id)}`}">← 그만하기</a>
+      seen.mark(w.id);
+      view.innerHTML = `<a class="crumb" href="${id === "due" || id === "new" ? "#/" : `#/s/${esc(id)}`}">← 그만하기</a>
         <div class="fc-count muted small">${i + 1} / ${deck.length}</div>
         <div class="card fc" id="fc">
-          <div class="fc-front"><div class="fc-word en">${esc(w.word)}</div><div class="muted">${esc(w.pos || "")}</div>
+          <div class="fc-front"><div class="fc-word en">${esc(w.word)} ${sayBtn(w.word)}</div><div class="muted">${esc(w.pos || "")}</div>
             <div class="fc-hint muted small">${hintOf(w)}</div>
             <div class="muted small" style="margin-top:16px">탭해서 뜻 보기</div></div>
           <div class="fc-back" hidden><div class="fc-word en fc-word-sm">${esc(w.word)} <span class="muted small">${esc(w.pos || "")}</span></div>${entry(w, w.set)}</div>
@@ -332,6 +386,12 @@
 
   // ---------- 공통 클릭 ----------
   document.addEventListener("click", (e) => {
+    const b = e.target.closest(".say");
+    if (!b) return;
+    e.preventDefault(); e.stopPropagation();   // 목록 펼침 · 카드 뒤집기와 겹치지 않게
+    speak(b.dataset.say);
+  }, true);
+  document.addEventListener("click", (e) => {
     const b = e.target.closest(".rate button");
     if (!b || b.disabled) return;
     const bar = b.closest(".rate");
@@ -354,7 +414,7 @@
       else if (parts[0] === "cards" && parts[1]) await renderCards(parts[1]);
       else if (parts[0] === "search") await renderSearch(new URLSearchParams(qs || "").get("q") || "");
       else if (parts[0] === "ask") renderAsk(new URLSearchParams(qs || ""));
-      else renderHome(idx);
+      else await renderHome(idx);
     } catch (err) {
       view.innerHTML = `<p class="notice">내용을 불러오지 못했습니다. 잠시 뒤 새로고침해 주세요.<br><span class="small">${esc(err.message)}</span></p>`;
     }
